@@ -7,14 +7,13 @@ from datetime import datetime
 from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
-from openpyxl import Workbook, load_workbook
+from openpyxl import Workbook
+from openpyxl.drawing.image import Image as XLImage
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
-from openpyxl.utils import get_column_letter
 from openpyxl.utils.dataframe import dataframe_to_rows
 
 
@@ -29,10 +28,18 @@ st.set_page_config(
 
 DB_PATH = os.getenv("HR_APP_DB", "hr_evaluacion_guatemala.db")
 
+
+def get_secret(key: str, default: str = "") -> str:
+    try:
+        return st.secrets[key]
+    except Exception:
+        return os.getenv(key.upper(), default)
+
+
 st.title("👥 Evaluación Integral de Personal")
 st.caption(
-    "Aplicación de recursos humanos adaptada al contexto de Guatemala: idoneidad, permanencia,"
-    " ajuste cultural y riesgo de rotación."
+    "Aplicación de recursos humanos adaptada al contexto de Guatemala: idoneidad, permanencia, "
+    "ajuste cultural y riesgo de rotación."
 )
 
 
@@ -194,7 +201,7 @@ def explain_score(score: float) -> str:
     return "Baja"
 
 
-def produce_recommendation(overall: float, permanency: float, fit_cultural: float, risk: float) -> str:
+def produce_recommendation(overall: float, permanency: float, risk: float) -> str:
     if overall >= 80 and permanency >= 70 and risk < 35:
         return "Recomendado para contratación inmediata, con seguimiento inicial de 30 días."
     if overall >= 70 and permanency >= 60:
@@ -204,6 +211,9 @@ def produce_recommendation(overall: float, permanency: float, fit_cultural: floa
     return "No priorizar en esta vacante; la brecha entre perfil y puesto es alta."
 
 
+# =========================================================
+# Base de datos
+# =========================================================
 def init_db() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     cur = conn.cursor()
@@ -232,9 +242,8 @@ def init_db() -> sqlite3.Connection:
     )
     conn.commit()
 
-    # Usuario administrador inicial desde secrets o valores por defecto.
-    admin_user = st.secrets.get("admin_username", os.getenv("ADMIN_USERNAME", "admin"))
-    admin_pass = st.secrets.get("admin_password", os.getenv("ADMIN_PASSWORD", "admin123"))
+    admin_user = get_secret("admin_username", "admin")
+    admin_pass = get_secret("admin_password", "admin123")
     cur.execute("SELECT COUNT(*) FROM users WHERE username = ?", (admin_user,))
     if cur.fetchone()[0] == 0:
         cur.execute(
@@ -287,8 +296,7 @@ def list_evaluations() -> pd.DataFrame:
         return df
     parsed = df["result_json"].apply(json.loads)
     expanded = pd.json_normalize(parsed)
-    out = pd.concat([df.drop(columns=["result_json"]), expanded], axis=1)
-    return out
+    return pd.concat([df.drop(columns=["result_json"]), expanded], axis=1)
 
 
 # =========================================================
@@ -300,7 +308,6 @@ if "current_user" not in st.session_state:
     st.session_state.current_user = None
 if "current_role" not in st.session_state:
     st.session_state.current_role = None
-
 
 if not st.session_state.authenticated:
     st.subheader("Acceso al sistema")
@@ -322,7 +329,6 @@ if not st.session_state.authenticated:
 
     st.stop()
 
-
 with st.sidebar:
     st.success(f"Sesión activa: {st.session_state.current_user} ({st.session_state.current_role})")
     if st.button("Cerrar sesión"):
@@ -333,19 +339,16 @@ with st.sidebar:
 
 
 # =========================================================
-# Capa opcional de IA
+# IA opcional
 # =========================================================
 def generate_ai_summary(payload: Dict) -> str:
-    """Intenta usar una API externa si hay configuración en secrets.
-    Compatible con un estilo sencillo: endpoint, api_key y model.
-    """
-    api_key = st.secrets.get("llm_api_key", os.getenv("LLM_API_KEY", ""))
-    api_url = st.secrets.get("llm_api_url", os.getenv("LLM_API_URL", ""))
-    api_model = st.secrets.get("llm_model", os.getenv("LLM_MODEL", ""))
+    api_key = get_secret("llm_api_key", "")
+    api_url = get_secret("llm_api_url", "")
+    api_model = get_secret("llm_model", "")
 
     if not api_key or not api_url:
         return (
-            "La evaluación se generó con reglas internas. Para activación de IA, configure llm_api_key, "
+            "La evaluación se generó con reglas internas. Para activar IA, configure llm_api_key, "
             "llm_api_url y llm_model en secrets o variables de entorno."
         )
 
@@ -358,11 +361,7 @@ Datos:
 {json.dumps(payload, ensure_ascii=False, indent=2)}
 """
 
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     body = {
         "model": api_model,
         "messages": [
@@ -376,8 +375,6 @@ Datos:
         r = requests.post(api_url, headers=headers, json=body, timeout=60)
         r.raise_for_status()
         data = r.json()
-
-        # Soporte para respuestas tipo OpenAI-style
         if isinstance(data, dict):
             if "choices" in data and data["choices"]:
                 msg = data["choices"][0].get("message", {}).get("content")
@@ -385,14 +382,13 @@ Datos:
                     return msg.strip()
             if "output_text" in data:
                 return str(data["output_text"]).strip()
-
         return "No se pudo interpretar la respuesta de la API de IA."
     except Exception as e:
         return f"No fue posible consultar la API de IA: {e}"
 
 
 # =========================================================
-# Entradas del puesto y del candidato
+# Entradas
 # =========================================================
 with st.sidebar:
     st.header("Perfil del puesto")
@@ -458,7 +454,7 @@ with st.sidebar:
 
 
 # =========================================================
-# Cálculos principales
+# Cálculos
 # =========================================================
 job = JobProfile(
     puesto=puesto,
@@ -540,7 +536,7 @@ weighted_total = clamp(
     - (peso_riesgo / 100) * risk_score * 0.6
 )
 
-recommendation = produce_recommendation(weighted_total, permanency_score, cultural_score, risk_score)
+recommendation = produce_recommendation(weighted_total, permanency_score, risk_score)
 
 alerts: List[str] = []
 if salary_score < 60:
@@ -567,6 +563,23 @@ if permanency_score >= 75:
     strengths.append("Perfil favorable para permanencia.")
 
 
+suggestions: List[str] = []
+if salary_score < 80:
+    suggestions.append("Revisar banda salarial o incluir incentivos por desempeño/traslado.")
+if route_score < 80:
+    suggestions.append("Considerar apoyo de transporte o un esquema híbrido si el puesto lo permite.")
+if tech < 70:
+    suggestions.append("Programar una prueba técnica breve o un plan de capacitación de ingreso.")
+if soft < 70:
+    suggestions.append("Aplicar entrevista por competencias enfocada en puntualidad, servicio y trabajo en equipo.")
+if risk_score >= 50:
+    suggestions.append("Validar referencias laborales y motivos de salida de empleos anteriores.")
+if job.zona_rural and not candidate.acepta_trabajo_rural:
+    suggestions.append("Explorar candidato alterno con mayor disposición a traslado en zona rural.")
+if not suggestions:
+    suggestions.append("El perfil es compatible con la vacante. Proceder a entrevista final.")
+
+
 def build_result_payload() -> Dict:
     return {
         "candidato": asdict(candidate),
@@ -581,22 +594,23 @@ def build_result_payload() -> Dict:
         "recomendacion": recommendation,
         "alertas": alerts,
         "fortalezas": strengths,
-        "sugerencias": suggestions if 'suggestions' in globals() else [],
+        "sugerencias": suggestions,
     }
 
 
+# =========================================================
+# Excel profesional
+# =========================================================
 def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) -> bytes:
-    """Genera un Excel profesional con múltiples hojas y formato ejecutivo."""
     output = BytesIO()
-
     wb = Workbook()
+
     ws_summary = wb.active
     ws_summary.title = "Resumen"
     ws_detail = wb.create_sheet("Detalle")
     ws_candidate = wb.create_sheet("Perfil_Candidato")
     ws_report = wb.create_sheet("Informe_RRHH")
 
-    # Paleta sobria y profesional
     navy = "1F4E78"
     blue = "D9EAF7"
     light_blue = "EEF5FB"
@@ -623,28 +637,19 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
     normal_font = Font(color=dark, size=11)
     small_font = Font(color=dark, size=10)
 
-    def style_range(ws, cell_range, fill=None, font=None, alignment=None, border_obj=None):
-        for row in ws[cell_range]:
-            for cell in row:
-                if fill:
-                    cell.fill = fill
-                if font:
-                    cell.font = font
-                if alignment:
-                    cell.alignment = alignment
-                if border_obj:
-                    cell.border = border_obj
-
     def set_widths(ws, widths: Dict[str, float]):
         for col, width in widths.items():
             ws.column_dimensions[col].width = width
 
-    def write_kv_sheet(ws, title: str, items: List[Tuple[str, str]]):
-        ws.merge_cells("A1:D1")
+    def write_title(ws, title: str, end_col: str = "H"):
+        ws.merge_cells(f"A1:{end_col}1")
         ws["A1"] = title
         ws["A1"].fill = title_fill
-        ws["A1"].font = title_font
-        ws["A1"].alignment = Alignment(horizontal="center")
+        ws["A1"].font = Font(color=white, bold=True, size=14)
+        ws["A1"].alignment = Alignment(horizontal="center", vertical="center")
+
+    def write_kv_sheet(ws, title: str, items: List[Tuple[str, str]]):
+        write_title(ws, title, end_col="D")
         row = 3
         for label, value in items:
             ws[f"A{row}"] = label
@@ -655,21 +660,18 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
             ws[f"B{row}"].fill = gray_fill
             ws[f"A{row}"].border = border
             ws[f"B{row}"].border = border
+            ws[f"A{row}"].alignment = Alignment(vertical="top", wrap_text=True)
+            ws[f"B{row}"].alignment = Alignment(vertical="top", wrap_text=True)
             row += 1
         set_widths(ws, {"A": 34, "B": 65, "C": 18, "D": 18})
 
-    # Hoja Resumen
-    ws_summary.merge_cells("A1:H1")
-    ws_summary["A1"] = "Reporte de Evaluación de Personal - Guatemala"
-    ws_summary["A1"].fill = title_fill
-    ws_summary["A1"].font = Font(color=white, bold=True, size=14)
-    ws_summary["A1"].alignment = Alignment(horizontal="center")
-
+    # Resumen
+    write_title(ws_summary, "Reporte de Evaluación de Personal - Guatemala", end_col="H")
     ws_summary.append([])
     for r in dataframe_to_rows(summary_df, index=False, header=True):
         ws_summary.append(r)
-
-    for cell in ws_summary[3]:
+    header_row = 3
+    for cell in ws_summary[header_row]:
         cell.fill = header_fill
         cell.font = header_font
         cell.border = border
@@ -679,12 +681,10 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
             cell.border = border
             cell.font = small_font
             cell.alignment = Alignment(vertical="top", wrap_text=True)
-
     set_widths(ws_summary, {"A": 24, "B": 24, "C": 18, "D": 18, "E": 18, "F": 16, "G": 18, "H": 48})
     ws_summary.freeze_panes = "A3"
     ws_summary.auto_filter.ref = f"A3:H{ws_summary.max_row}"
 
-    # Formato condicional manual del resultado global
     for row in range(4, ws_summary.max_row + 1):
         try:
             value = float(ws_summary[f"G{row}"].value)
@@ -697,13 +697,8 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
         except Exception:
             pass
 
-    # Hoja Detalle
-    ws_detail.merge_cells("A1:D1")
-    ws_detail["A1"] = "Detalle de Evaluación"
-    ws_detail["A1"].fill = title_fill
-    ws_detail["A1"].font = title_font
-    ws_detail["A1"].alignment = Alignment(horizontal="center")
-
+    # Detalle
+    write_title(ws_detail, "Detalle de Evaluación", end_col="D")
     detail_rows = [
         ("Factor", "Puntaje", "Interpretación", "Observación"),
         ("Nivel educativo", f"{edu:.1f}", "Cumplimiento académico", "Comparado con el nivel mínimo requerido"),
@@ -722,6 +717,7 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
         cell.fill = header_fill
         cell.font = header_font
         cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
     for row in ws_detail.iter_rows(min_row=4, max_row=ws_detail.max_row):
         for cell in row:
             cell.border = border
@@ -751,12 +747,7 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
     )
 
     # Informe RRHH
-    ws_report.merge_cells("A1:F1")
-    ws_report["A1"] = "Informe Ejecutivo para RRHH"
-    ws_report["A1"].fill = title_fill
-    ws_report["A1"].font = Font(color=white, bold=True, size=14)
-    ws_report["A1"].alignment = Alignment(horizontal="center")
-
+    write_title(ws_report, "Informe Ejecutivo para RRHH", end_col="F")
     ws_report["A3"] = "Puesto"
     ws_report["B3"] = job.puesto
     ws_report["A4"] = "Sector"
@@ -768,14 +759,11 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
     ws_report["A7"] = "Recomendación"
     ws_report["B7"] = recommendation
     ws_report["A9"] = "Fortalezas"
-    ws_report["B9"] = "
-".join(f"- {x}" for x in (strengths or ["No se identifican fortalezas destacadas."]))
+    ws_report["B9"] = "\n".join([f"- {x}" for x in (strengths or ["No se identifican fortalezas destacadas."])])
     ws_report["A12"] = "Alertas"
-    ws_report["B12"] = "
-".join(f"- {x}" for x in (alerts or ["No se detectan alertas relevantes."]))
+    ws_report["B12"] = "\n".join([f"- {x}" for x in (alerts or ["No se detectan alertas relevantes."])])
     ws_report["A15"] = "Sugerencias"
-    ws_report["B15"] = "
-".join(f"- {x}" for x in (suggestions or ["El perfil es compatible con la vacante. Proceder a entrevista final."]))
+    ws_report["B15"] = "\n".join([f"- {x}" for x in (suggestions or ["El perfil es compatible con la vacante. Proceder a entrevista final."])])
     ws_report["A18"] = "Resumen narrativo"
     ws_report["B18"] = (
         f"El candidato {candidate.nombre} presenta un resultado global de {weighted_total:.1f}%, "
@@ -787,23 +775,20 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
         ws_report[f"A{r}"].fill = subheader_fill
         ws_report[f"A{r}"].font = header_font
         ws_report[f"A{r}"].border = border
+        ws_report[f"A{r}"].alignment = Alignment(vertical="top", wrap_text=True)
         ws_report[f"B{r}"].border = border
         ws_report[f"B{r}"].alignment = Alignment(wrap_text=True, vertical="top")
         ws_report[f"B{r}"].font = normal_font
     set_widths(ws_report, {"A": 24, "B": 85, "C": 18, "D": 18, "E": 18, "F": 18})
 
-    # Marca de tiempo y firma
     ws_report["A21"] = "Generado el"
     ws_report["B21"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
     ws_report["A21"].font = header_font
     ws_report["B21"].font = normal_font
 
-    # Logo opcional si existe
-    logo_path = st.secrets.get("logo_path", os.getenv("LOGO_PATH", "logo.png"))
+    logo_path = get_secret("logo_path", "logo.png")
     if os.path.exists(logo_path):
         try:
-            from openpyxl.drawing.image import Image as XLImage
-
             img = XLImage(logo_path)
             img.width = 110
             img.height = 40
@@ -811,7 +796,6 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
         except Exception:
             pass
 
-    # Ajustes finales
     for ws in [ws_summary, ws_detail, ws_candidate, ws_report]:
         ws.sheet_view.showGridLines = False
 
@@ -820,6 +804,9 @@ def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) ->
     return output.getvalue()
 
 
+# =========================================================
+# Validación y registro de usuarios
+# =========================================================
 def validate_username(username: str) -> Tuple[bool, str]:
     username = username.strip()
     if len(username) < 3:
@@ -887,7 +874,7 @@ with tab1:
         left, right = st.columns([1.1, 0.9])
         with left:
             st.write("### Desglose del análisis")
-            df = pd.DataFrame(
+            detail_df = pd.DataFrame(
                 [
                     ["Nivel educativo", edu],
                     ["Habilidades técnicas", tech],
@@ -902,7 +889,7 @@ with tab1:
                 ],
                 columns=["Factor", "Puntaje"],
             )
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            st.dataframe(detail_df, use_container_width=True, hide_index=True)
 
         with right:
             st.write("### Fortalezas y alertas")
@@ -939,21 +926,6 @@ with tab1:
         st.plotly_chart(fig_radar, use_container_width=True)
 
         st.subheader("Sugerencias automáticas")
-        suggestions: List[str] = []
-        if salary_score < 80:
-            suggestions.append("Revisar banda salarial o incluir incentivos por desempeño/traslado.")
-        if route_score < 80:
-            suggestions.append("Considerar apoyo de transporte o un esquema híbrido si el puesto lo permite.")
-        if tech < 70:
-            suggestions.append("Programar una prueba técnica breve o un plan de capacitación de ingreso.")
-        if soft < 70:
-            suggestions.append("Aplicar entrevista por competencias enfocada en puntualidad, servicio y trabajo en equipo.")
-        if risk_score >= 50:
-            suggestions.append("Validar referencias laborales y motivos de salida de empleos anteriores.")
-        if job.zona_rural and not candidate.acepta_trabajo_rural:
-            suggestions.append("Explorar candidato alterno con mayor disposición a traslado en zona rural.")
-        if not suggestions:
-            suggestions.append("El perfil es compatible con la vacante. Proceder a entrevista final.")
         for s in suggestions:
             st.markdown(f"- {s}")
 
@@ -974,11 +946,14 @@ with tab1:
         )
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
-        # Exportar CSV
         csv = summary_df.to_csv(index=False).encode("utf-8")
-        st.download_button("Descargar resumen CSV", csv, file_name="evaluacion_personal_guatemala.csv", mime="text/csv")
+        st.download_button(
+            "Descargar resumen CSV",
+            csv,
+            file_name="evaluacion_personal_guatemala.csv",
+            mime="text/csv",
+        )
 
-        # Exportar Excel profesional con múltiples hojas
         excel_bytes = create_professional_excel_report(build_result_payload(), summary_df)
         st.download_button(
             "Descargar informe Excel profesional",
@@ -988,20 +963,19 @@ with tab1:
         )
 
         if st.button("Guardar evaluación en la base de datos"):
-            payload = build_result_payload()
-            save_evaluation(st.session_state.current_user, candidate.nombre, job.puesto, payload)
+            save_evaluation(st.session_state.current_user, candidate.nombre, job.puesto, build_result_payload())
             st.success("Evaluación guardada correctamente.")
 
         st.subheader("Resumen generado por IA")
-        ai_output = generate_ai_summary(build_result_payload())
-        st.info(ai_output)
+        st.info(generate_ai_summary(build_result_payload()))
     else:
         st.info("Completa el formulario y pulsa **Evaluar candidato** para generar el análisis.")
         st.markdown("### Qué distingue esta aplicación")
         st.markdown(
             "- No solo analiza currículums: evalúa **idoneidad, permanencia y ajuste al contexto guatemalteco**.\n"
             "- Considera **salario en quetzales, distancia, horario, traslado y rotación laboral**.\n"
-            "- Permite guardar resultados y generar un resumen ejecutivo.")
+            "- Permite guardar resultados y generar un resumen ejecutivo."
+        )
 
 with tab2:
     st.subheader("Historial de evaluaciones")
@@ -1009,10 +983,30 @@ with tab2:
     if history.empty:
         st.info("Aún no hay evaluaciones registradas.")
     else:
-        cols_to_show = [c for c in ["created_at", "username", "candidate_name", "job_title", "scores.resultado_global", "scores.idoneidad", "scores.permanencia", "scores.cultural", "scores.riesgo", "recomendacion"] if c in history.columns]
+        cols_to_show = [
+            c
+            for c in [
+                "created_at",
+                "username",
+                "candidate_name",
+                "job_title",
+                "scores.resultado_global",
+                "scores.idoneidad",
+                "scores.permanencia",
+                "scores.cultural",
+                "scores.riesgo",
+                "recomendacion",
+            ]
+            if c in history.columns
+        ]
         st.dataframe(history[cols_to_show], use_container_width=True, hide_index=True)
         csv_history = history.to_csv(index=False).encode("utf-8")
-        st.download_button("Descargar historial CSV", csv_history, file_name="historial_evaluaciones.csv", mime="text/csv")
+        st.download_button(
+            "Descargar historial CSV",
+            csv_history,
+            file_name="historial_evaluaciones.csv",
+            mime="text/csv",
+        )
 
 with tab3:
     st.subheader("Registro de usuarios")
@@ -1052,6 +1046,7 @@ admin_password = "admin123"
 llm_api_key = "..."
 llm_api_url = "..."
 llm_model = "..."
+logo_path = "logo.png"
         """.strip(),
         language="text",
     )
@@ -1062,6 +1057,6 @@ llm_model = "..."
 # =========================================================
 st.divider()
 st.caption(
-    "Nota: este modelo apoya la decisión de RRHH, pero no sustituye entrevistas, verificación de referencias"
-    " ni validaciones legales o laborales."
+    "Nota: este modelo apoya la decisión de RRHH, pero no sustituye entrevistas, verificación de referencias "
+    "ni validaciones legales o laborales."
 )
