@@ -579,6 +579,26 @@ def build_result_payload() -> Dict:
     }
 
 
+def validate_username(username: str) -> Tuple[bool, str]:
+    username = username.strip()
+    if len(username) < 3:
+        return False, "El usuario debe tener al menos 3 caracteres."
+    if " " in username:
+        return False, "El usuario no debe contener espacios."
+    return True, ""
+
+
+def register_user(username: str, password: str, confirm_password: str, role: str = "user") -> Tuple[bool, str]:
+    ok, msg = validate_username(username)
+    if not ok:
+        return False, msg
+    if len(password) < 6:
+        return False, "La contraseña debe tener al menos 6 caracteres."
+    if password != confirm_password:
+        return False, "Las contraseñas no coinciden."
+    return create_user(username.strip(), password, role)
+
+
 # =========================================================
 # Interfaz principal
 # =========================================================
@@ -744,19 +764,31 @@ with tab2:
         st.download_button("Descargar historial CSV", csv_history, file_name="historial_evaluaciones.csv", mime="text/csv")
 
 with tab3:
-    st.subheader("Administración de usuarios")
+    st.subheader("Registro de usuarios")
     if st.session_state.current_role != "admin":
         st.warning("Solo el administrador puede crear usuarios.")
     else:
-        new_user = st.text_input("Nuevo usuario", key="new_user")
-        new_pass = st.text_input("Nueva contraseña", type="password", key="new_pass")
-        new_role = st.selectbox("Rol", ["user", "admin"], key="new_role")
-        if st.button("Crear usuario"):
-            ok, msg = create_user(new_user, new_pass, new_role)
+        reg_col1, reg_col2 = st.columns(2)
+        with reg_col1:
+            new_user = st.text_input("Nuevo usuario", key="new_user")
+            new_role = st.selectbox("Rol", ["user", "admin"], key="new_role")
+        with reg_col2:
+            new_pass = st.text_input("Nueva contraseña", type="password", key="new_pass")
+            confirm_pass = st.text_input("Confirmar contraseña", type="password", key="confirm_pass")
+
+        if st.button("Registrar usuario"):
+            ok, msg = register_user(new_user, new_pass, confirm_pass, new_role)
             if ok:
                 st.success(msg)
             else:
                 st.error(msg)
+
+        st.markdown("#### Usuarios registrados")
+        users_df = pd.read_sql_query("SELECT username, role, created_at FROM users ORDER BY id DESC", conn)
+        if users_df.empty:
+            st.info("Todavía no hay usuarios registrados.")
+        else:
+            st.dataframe(users_df, use_container_width=True, hide_index=True)
 
     st.divider()
     st.subheader("Configuración técnica")
