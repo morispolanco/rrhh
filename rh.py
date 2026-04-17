@@ -4,6 +4,7 @@ import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from io import BytesIO
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -11,6 +12,10 @@ import pandas as pd
 import plotly.graph_objects as go
 import requests
 import streamlit as st
+from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
+from openpyxl.utils.dataframe import dataframe_to_rows
 
 
 # =========================================================
@@ -576,7 +581,243 @@ def build_result_payload() -> Dict:
         "recomendacion": recommendation,
         "alertas": alerts,
         "fortalezas": strengths,
+        "sugerencias": suggestions if 'suggestions' in globals() else [],
     }
+
+
+def create_professional_excel_report(payload: Dict, summary_df: pd.DataFrame) -> bytes:
+    """Genera un Excel profesional con múltiples hojas y formato ejecutivo."""
+    output = BytesIO()
+
+    wb = Workbook()
+    ws_summary = wb.active
+    ws_summary.title = "Resumen"
+    ws_detail = wb.create_sheet("Detalle")
+    ws_candidate = wb.create_sheet("Perfil_Candidato")
+    ws_report = wb.create_sheet("Informe_RRHH")
+
+    # Paleta sobria y profesional
+    navy = "1F4E78"
+    blue = "D9EAF7"
+    light_blue = "EEF5FB"
+    green = "E2F0D9"
+    yellow = "FFF2CC"
+    red = "F4CCCC"
+    gray = "F3F4F6"
+    white = "FFFFFF"
+    dark = "1F2937"
+
+    thin = Side(border_style="thin", color="D0D7DE")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+    title_fill = PatternFill("solid", fgColor=navy)
+    header_fill = PatternFill("solid", fgColor=blue)
+    subheader_fill = PatternFill("solid", fgColor=light_blue)
+    green_fill = PatternFill("solid", fgColor=green)
+    yellow_fill = PatternFill("solid", fgColor=yellow)
+    red_fill = PatternFill("solid", fgColor=red)
+    gray_fill = PatternFill("solid", fgColor=gray)
+
+    title_font = Font(color=white, bold=True, size=13)
+    header_font = Font(color=dark, bold=True)
+    normal_font = Font(color=dark, size=11)
+    small_font = Font(color=dark, size=10)
+
+    def style_range(ws, cell_range, fill=None, font=None, alignment=None, border_obj=None):
+        for row in ws[cell_range]:
+            for cell in row:
+                if fill:
+                    cell.fill = fill
+                if font:
+                    cell.font = font
+                if alignment:
+                    cell.alignment = alignment
+                if border_obj:
+                    cell.border = border_obj
+
+    def set_widths(ws, widths: Dict[str, float]):
+        for col, width in widths.items():
+            ws.column_dimensions[col].width = width
+
+    def write_kv_sheet(ws, title: str, items: List[Tuple[str, str]]):
+        ws.merge_cells("A1:D1")
+        ws["A1"] = title
+        ws["A1"].fill = title_fill
+        ws["A1"].font = title_font
+        ws["A1"].alignment = Alignment(horizontal="center")
+        row = 3
+        for label, value in items:
+            ws[f"A{row}"] = label
+            ws[f"B{row}"] = value
+            ws[f"A{row}"].font = header_font
+            ws[f"B{row}"].font = normal_font
+            ws[f"A{row}"].fill = subheader_fill
+            ws[f"B{row}"].fill = gray_fill
+            ws[f"A{row}"].border = border
+            ws[f"B{row}"].border = border
+            row += 1
+        set_widths(ws, {"A": 34, "B": 65, "C": 18, "D": 18})
+
+    # Hoja Resumen
+    ws_summary.merge_cells("A1:H1")
+    ws_summary["A1"] = "Reporte de Evaluación de Personal - Guatemala"
+    ws_summary["A1"].fill = title_fill
+    ws_summary["A1"].font = Font(color=white, bold=True, size=14)
+    ws_summary["A1"].alignment = Alignment(horizontal="center")
+
+    ws_summary.append([])
+    for r in dataframe_to_rows(summary_df, index=False, header=True):
+        ws_summary.append(r)
+
+    for cell in ws_summary[3]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for row in ws_summary.iter_rows(min_row=4, max_row=ws_summary.max_row):
+        for cell in row:
+            cell.border = border
+            cell.font = small_font
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+
+    set_widths(ws_summary, {"A": 24, "B": 24, "C": 18, "D": 18, "E": 18, "F": 16, "G": 18, "H": 48})
+    ws_summary.freeze_panes = "A3"
+    ws_summary.auto_filter.ref = f"A3:H{ws_summary.max_row}"
+
+    # Formato condicional manual del resultado global
+    for row in range(4, ws_summary.max_row + 1):
+        try:
+            value = float(ws_summary[f"G{row}"].value)
+            if value >= 80:
+                ws_summary[f"G{row}"].fill = green_fill
+            elif value >= 60:
+                ws_summary[f"G{row}"].fill = yellow_fill
+            else:
+                ws_summary[f"G{row}"].fill = red_fill
+        except Exception:
+            pass
+
+    # Hoja Detalle
+    ws_detail.merge_cells("A1:D1")
+    ws_detail["A1"] = "Detalle de Evaluación"
+    ws_detail["A1"].fill = title_fill
+    ws_detail["A1"].font = title_font
+    ws_detail["A1"].alignment = Alignment(horizontal="center")
+
+    detail_rows = [
+        ("Factor", "Puntaje", "Interpretación", "Observación"),
+        ("Nivel educativo", f"{edu:.1f}", "Cumplimiento académico", "Comparado con el nivel mínimo requerido"),
+        ("Habilidades técnicas", f"{tech:.1f}", "Coincidencia técnica", "Cruce de competencias declaradas"),
+        ("Habilidades blandas", f"{soft:.1f}", "Coincidencia conductual", "Puntualidad, adaptabilidad y trabajo en equipo"),
+        ("Experiencia", f"{experience_score:.1f}", "Trayectoria laboral", "Años de experiencia relacionados"),
+        ("Compatibilidad salarial", f"{salary_score:.1f}", "Ajuste económico", "Relación entre oferta y expectativa"),
+        ("Ajuste por traslado", f"{route_score:.1f}", "Factibilidad logística", "Distancia y zona rural/urbana"),
+        ("Permanencia estimada", f"{permanency_score:.1f}", "Retención esperada", "Probabilidad de continuidad"),
+        ("Ajuste cultural", f"{cultural_score:.1f}", "Encaje organizacional", "Adaptación al puesto y contexto"),
+        ("Riesgo total", f"{risk_score:.1f}", "Señal de alerta", "Probabilidad de rotación o abandono"),
+    ]
+    for row in detail_rows:
+        ws_detail.append(row)
+    for cell in ws_detail[3]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.border = border
+    for row in ws_detail.iter_rows(min_row=4, max_row=ws_detail.max_row):
+        for cell in row:
+            cell.border = border
+            cell.font = small_font
+            cell.alignment = Alignment(wrap_text=True, vertical="top")
+    set_widths(ws_detail, {"A": 24, "B": 14, "C": 24, "D": 42})
+    ws_detail.freeze_panes = "A3"
+
+    # Perfil del candidato
+    write_kv_sheet(
+        ws_candidate,
+        "Perfil del Candidato",
+        [
+            ("Nombre", candidate.nombre),
+            ("Residencia", candidate.residencia),
+            ("Nivel educativo", candidate.nivel_educativo),
+            ("Experiencia (años)", f"{candidate.experiencia_anios}"),
+            ("Habilidades técnicas", ", ".join(candidate.habilidades_tecnicas)),
+            ("Habilidades blandas", ", ".join(candidate.habilidades_blandas)),
+            ("Expectativa salarial (Q)", f"Q {candidate.expectativa_salarial:,.2f}"),
+            ("Cambios de empleo 3 años", str(candidate.cambios_empleo_3anios)),
+            ("Meses último empleo", str(candidate.meses_en_ultimo_empleo)),
+            ("Disponibilidad horaria", candidate.disponibilidad_horario),
+            ("Acepta turnos", "Sí" if candidate.acepta_turnos else "No"),
+            ("Acepta trabajo rural", "Sí" if candidate.acepta_trabajo_rural else "No"),
+        ],
+    )
+
+    # Informe RRHH
+    ws_report.merge_cells("A1:F1")
+    ws_report["A1"] = "Informe Ejecutivo para RRHH"
+    ws_report["A1"].fill = title_fill
+    ws_report["A1"].font = Font(color=white, bold=True, size=14)
+    ws_report["A1"].alignment = Alignment(horizontal="center")
+
+    ws_report["A3"] = "Puesto"
+    ws_report["B3"] = job.puesto
+    ws_report["A4"] = "Sector"
+    ws_report["B4"] = job.sector
+    ws_report["A5"] = "Ubicación"
+    ws_report["B5"] = job.ubicacion
+    ws_report["A6"] = "Resultado global"
+    ws_report["B6"] = f"{weighted_total:.1f}%"
+    ws_report["A7"] = "Recomendación"
+    ws_report["B7"] = recommendation
+    ws_report["A9"] = "Fortalezas"
+    ws_report["B9"] = "
+".join(f"- {x}" for x in (strengths or ["No se identifican fortalezas destacadas."]))
+    ws_report["A12"] = "Alertas"
+    ws_report["B12"] = "
+".join(f"- {x}" for x in (alerts or ["No se detectan alertas relevantes."]))
+    ws_report["A15"] = "Sugerencias"
+    ws_report["B15"] = "
+".join(f"- {x}" for x in (suggestions or ["El perfil es compatible con la vacante. Proceder a entrevista final."]))
+    ws_report["A18"] = "Resumen narrativo"
+    ws_report["B18"] = (
+        f"El candidato {candidate.nombre} presenta un resultado global de {weighted_total:.1f}%, "
+        f"con idoneidad de {idoneity_score:.1f}%, permanencia estimada de {permanency_score:.1f}% "
+        f"y ajuste cultural de {cultural_score:.1f}%."
+    )
+
+    for r in [3, 4, 5, 6, 7, 9, 12, 15, 18]:
+        ws_report[f"A{r}"].fill = subheader_fill
+        ws_report[f"A{r}"].font = header_font
+        ws_report[f"A{r}"].border = border
+        ws_report[f"B{r}"].border = border
+        ws_report[f"B{r}"].alignment = Alignment(wrap_text=True, vertical="top")
+        ws_report[f"B{r}"].font = normal_font
+    set_widths(ws_report, {"A": 24, "B": 85, "C": 18, "D": 18, "E": 18, "F": 18})
+
+    # Marca de tiempo y firma
+    ws_report["A21"] = "Generado el"
+    ws_report["B21"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    ws_report["A21"].font = header_font
+    ws_report["B21"].font = normal_font
+
+    # Logo opcional si existe
+    logo_path = st.secrets.get("logo_path", os.getenv("LOGO_PATH", "logo.png"))
+    if os.path.exists(logo_path):
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+
+            img = XLImage(logo_path)
+            img.width = 110
+            img.height = 40
+            ws_report.add_image(img, "D2")
+        except Exception:
+            pass
+
+    # Ajustes finales
+    for ws in [ws_summary, ws_detail, ws_candidate, ws_report]:
+        ws.sheet_view.showGridLines = False
+
+    wb.save(output)
+    output.seek(0)
+    return output.getvalue()
 
 
 def validate_username(username: str) -> Tuple[bool, str]:
@@ -733,8 +974,18 @@ with tab1:
         )
         st.dataframe(summary_df, use_container_width=True, hide_index=True)
 
+        # Exportar CSV
         csv = summary_df.to_csv(index=False).encode("utf-8")
         st.download_button("Descargar resumen CSV", csv, file_name="evaluacion_personal_guatemala.csv", mime="text/csv")
+
+        # Exportar Excel profesional con múltiples hojas
+        excel_bytes = create_professional_excel_report(build_result_payload(), summary_df)
+        st.download_button(
+            "Descargar informe Excel profesional",
+            data=excel_bytes,
+            file_name="informe_rrhh_guatemala.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
 
         if st.button("Guardar evaluación en la base de datos"):
             payload = build_result_payload()
