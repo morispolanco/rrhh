@@ -1529,5 +1529,4 @@ Explicación breve de funcionamiento:
 - El ranking ordena a los candidatos por score_final de mayor a menor; en empate, se prioriza la permanencia estimada.
 - La permanencia se estima con una heurística transparente basada en estabilidad previa, ajuste salarial, logística, jornada y coherencia de trayectoria.
 - El reporte Excel se genera con pandas y openpyxl en varias hojas: resumen de vacante, ranking general, detalle por candidato, observaciones y parámetros de evaluación, con formato profesional.
-- El acceso de administrador funciona con sesión en Streamlit; el usuario admin / admin123 se crea automáticamente en la primera ejecución y solo el administrador puede registrar, editar o desactivar usuarios.
 """
